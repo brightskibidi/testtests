@@ -181,7 +181,6 @@ GDRIVE_FILE_ID = "1xkTs2TQ3QsNw7-p5MpE-m7p1UJ56mHHV"
 def load_model():
     import gdown
 
-    # Download from Google Drive if the file is missing or is a tiny LFS pointer
     if (not os.path.exists(MODEL_PATH)
             or os.path.getsize(MODEL_PATH) < 1024 * 1024):
         if os.path.exists(MODEL_PATH):
@@ -192,7 +191,6 @@ def load_model():
             quiet=False,
         )
 
-    # Sanity check: make sure we got a real model, not an HTML error page
     if os.path.getsize(MODEL_PATH) < 1024 * 1024:
         raise RuntimeError(
             "Downloaded file is too small. Check that the Google Drive "
@@ -200,6 +198,13 @@ def load_model():
         )
 
     return load_learner(MODEL_PATH, cpu=True)
+
+try:
+    model = load_model()
+except Exception:
+    st.error("Error loading model:")
+    st.code(traceback.format_exc())
+    st.stop()
 # =========================================================
 # IMAGE UPLOADER
 # =========================================================
