@@ -256,9 +256,11 @@ def trace_failed_load(path):
             TracingUnpickler.trace.append(f"{module}.{name}")
             return super().find_class(module, name)
 
-    tracer = types.SimpleNamespace(
-        **{k: v for k, v in vars(pickle).items() if not k.startswith("__")}
-    )
+    # torch.load reads pickle_module.__name__, so this must be a real module
+    tracer = types.ModuleType("tracer_pickle")
+    for k, v in vars(pickle).items():
+        if not k.startswith("__"):
+            setattr(tracer, k, v)
     tracer.Unpickler = TracingUnpickler
 
     try:
@@ -267,7 +269,31 @@ def trace_failed_load(path):
     except Exception:
         error_text = traceback.format_exc()
 
-    return TracingUnpickler.trace[-30:], error_text
+    return TracingUnpickler.trace[-40:], error_text
+
+
+def list_pickle_globals(path):
+    """
+    Read the model file WITHOUT loading it and list every class/function
+    the pickle refers to (module.name). Works even when loading fails.
+    """
+    import zipfile
+    import pickletools
+
+    with zipfile.ZipFile(path) as z:
+        pkl_name = next(n for n in z.namelist() if n.endswith("data.pkl"))
+        data = z.read(pkl_name)
+
+    found = set()
+    strings = []
+    for op, arg, _pos in pickletools.genops(data):
+        if op.name in ("SHORT_BINUNICODE", "BINUNICODE", "BINUNICODE8", "UNICODE"):
+            strings.append(arg)
+        elif op.name == "GLOBAL":
+            found.add(str(arg).replace(" ", "."))
+        elif op.name == "STACK_GLOBAL" and len(strings) >= 2:
+            found.add(f"{strings[-2]}.{strings[-1]}")
+    return sorted(found)
 
 
 # ---- 1. Show environment info BEFORE loading (visible even on failure) ----
@@ -298,12 +324,24 @@ except Exception:
     st.error("Error loading model:")
     st.code(traceback.format_exc())
 
-    st.subheader("🔬 Which object failed to unpickle?")
+    st.subheader("🔬 Diagnostics")
+
+    # A: every class/function referenced inside the model file
+    try:
+        globals_list = list_pickle_globals(MODEL_PATH)
+        st.write(f"**A. Classes/functions referenced in the model file "
+                 f"({len(globals_list)}):**")
+        st.code("\n".join(globals_list))
+    except Exception:
+        st.write("Could not read the model file's contents:")
+        st.code(traceback.format_exc())
+
+    # B: what the unpickler was rebuilding when it failed
     try:
         last_globals, trace_error = trace_failed_load(MODEL_PATH)
-        st.write("Last classes/functions the unpickler resolved "
-                 "(the failing object is at or near the bottom):")
-        st.code("\n".join(last_globals))
+        st.write("**B. Last classes/functions resolved before the failure "
+                 "(failing object is at or near the bottom):**")
+        st.code("\n".join(last_globals) if last_globals else "(none)")
         st.code(trace_error)
     except Exception:
         st.write("Tracing itself failed:")
