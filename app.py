@@ -10,6 +10,8 @@ import PIL
 import os
 import traceback
 import hashlib
+import pickle
+import types
 import gdown
 
 # =========================================================
@@ -183,10 +185,30 @@ MODEL_PATH = "Skin_disease (2).pkl"
 # Set to False once everything works to hide the debug panel
 SHOW_DEBUG = True
 
+# Packages that can affect how a fastai model is unpickled
+KEY_PACKAGES = [
+    "fastai", "fastcore", "fasttransform", "plum-dispatch",
+    "torch", "torchvision", "numpy", "pandas", "scipy",
+    "scikit-learn", "matplotlib", "pillow", "packaging",
+    "pyyaml", "requests", "spacy", "fastprogress", "fastdownload",
+    "dill", "cloudpickle", "streamlit", "gdown",
+]
+
+
+def package_versions():
+    from importlib import metadata
+    versions = {"python": sys.version}
+    for name in KEY_PACKAGES:
+        try:
+            versions[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            versions[name] = "not installed"
+    return versions
+
 
 @st.cache_resource
-def load_model():
-    # Always start from a clean download
+def download_model():
+    """Download the model from Google Drive and return (size, md5)."""
     if os.path.exists(MODEL_PATH):
         os.remove(MODEL_PATH)
 
@@ -213,41 +235,81 @@ def load_model():
     with open(MODEL_PATH, "rb") as f:
         md5 = hashlib.md5(f.read()).hexdigest()
 
-    learner = load_learner(
-        MODEL_PATH,
-        cpu=True,
+    return size, md5
+
+
+@st.cache_resource
+def load_model():
+    return load_learner(MODEL_PATH, cpu=True)
+
+
+def trace_failed_load(path):
+    """
+    Re-run the load with a tracing unpickler that records which
+    classes/functions were being rebuilt. The LAST entries in the
+    trace show the object that made the load fail.
+    """
+    class TracingUnpickler(pickle.Unpickler):
+        trace = []
+
+        def find_class(self, module, name):
+            TracingUnpickler.trace.append(f"{module}.{name}")
+            return super().find_class(module, name)
+
+    tracer = types.SimpleNamespace(
+        **{k: v for k, v in vars(pickle).items() if not k.startswith("__")}
     )
+    tracer.Unpickler = TracingUnpickler
 
-    return learner, size, md5
+    try:
+        load_learner(path, cpu=True, pickle_module=tracer)
+        error_text = "Trace run finished without an error."
+    except Exception:
+        error_text = traceback.format_exc()
+
+    return TracingUnpickler.trace[-30:], error_text
 
 
+# ---- 1. Show environment info BEFORE loading (visible even on failure) ----
+if SHOW_DEBUG:
+    with st.expander("🛠 Debug info (environment & model file)", expanded=True):
+        st.write("**Package versions on Streamlit**")
+        st.json(package_versions())
+
+# ---- 2. Download ----
 try:
-    model, model_size, model_md5 = load_model()
+    model_size, model_md5 = download_model()
 except Exception:
-    st.error("Error loading model:")
+    st.error("Error downloading model:")
     st.code(traceback.format_exc())
     st.stop()
 
-# =========================================================
-# DEBUG PANEL (compare these values with your Colab output)
-# =========================================================
 if SHOW_DEBUG:
-    with st.expander("🛠 Debug info (environment & model file)"):
-        try:
-            import fasttransform
-            ft_version = fasttransform.__version__
-        except Exception:
-            ft_version = "not installed"
+    with st.expander("🛠 Model file info", expanded=True):
         st.write({
-            "python": sys.version,
-            "torch": torch.__version__,
-            "torchvision": torchvision.__version__,
-            "fastai": fastai.__version__,
-            "fasttransform": ft_version,
-            "pillow": PIL.__version__,
             "model_file_size_bytes": model_size,
             "model_file_md5": model_md5,
         })
+
+# ---- 3. Load (with tracing diagnostics if it fails) ----
+try:
+    model = load_model()
+except Exception:
+    st.error("Error loading model:")
+    st.code(traceback.format_exc())
+
+    st.subheader("🔬 Which object failed to unpickle?")
+    try:
+        last_globals, trace_error = trace_failed_load(MODEL_PATH)
+        st.write("Last classes/functions the unpickler resolved "
+                 "(the failing object is at or near the bottom):")
+        st.code("\n".join(last_globals))
+        st.code(trace_error)
+    except Exception:
+        st.write("Tracing itself failed:")
+        st.code(traceback.format_exc())
+    st.stop()
+
 # =========================================================
 # IMAGE UPLOADER
 # =========================================================
