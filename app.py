@@ -9,11 +9,9 @@ import torchvision
 import PIL
 import os
 import traceback
-import pathlib
-import platform
+import hashlib
+import gdown
 
-if platform.system() == "Linux":
-    pathlib.WindowsPath = pathlib.PosixPath
 # =========================================================
 # PAGE CONFIGURATION
 # =========================================================
@@ -174,37 +172,82 @@ disease_info = {
 # =========================================================
 # LOAD MODEL
 # =========================================================
-MODEL_PATH = "Skin_disease (2).pkl"
+# The model is hosted on Google Drive (GitHub/Git LFS only stored a
+# tiny pointer file). Paste the file ID from the share link here:
+# https://drive.google.com/file/d/<FILE_ID>/view
 GDRIVE_FILE_ID = "1xkTs2TQ3QsNw7-p5MpE-m7p1UJ56mHHV"
+
+# New file name so an old/stale Skin_disease.pkl from the repo is never used
+MODEL_PATH = "Skin_disease (2).pkl"
+
+# Set to False once everything works to hide the debug panel
+SHOW_DEBUG = True
+
 
 @st.cache_resource
 def load_model():
-    import gdown
+    # Always start from a clean download
+    if os.path.exists(MODEL_PATH):
+        os.remove(MODEL_PATH)
 
-    if (not os.path.exists(MODEL_PATH)
-            or os.path.getsize(MODEL_PATH) < 1024 * 1024):
-        if os.path.exists(MODEL_PATH):
-            os.remove(MODEL_PATH)
-        gdown.download(
-            id=GDRIVE_FILE_ID,
-            output=MODEL_PATH,
-            quiet=False,
-        )
+    gdown.download(
+        id=GDRIVE_FILE_ID,
+        output=MODEL_PATH,
+        quiet=False,
+    )
 
-    if os.path.getsize(MODEL_PATH) < 1024 * 1024:
+    if not os.path.exists(MODEL_PATH):
         raise RuntimeError(
-            "Downloaded file is too small. Check that the Google Drive "
-            "file is shared as 'Anyone with the link'."
+            "Model download failed. Check that the Google Drive file "
+            "is shared as 'Anyone with the link' and the file ID is correct."
         )
 
-    return load_learner(MODEL_PATH, cpu=True)
+    size = os.path.getsize(MODEL_PATH)
+    if size < 1024 * 1024:
+        raise RuntimeError(
+            f"Downloaded file is only {size} bytes - too small to be the "
+            "model. Check the Google Drive sharing setting "
+            "('Anyone with the link')."
+        )
+
+    with open(MODEL_PATH, "rb") as f:
+        md5 = hashlib.md5(f.read()).hexdigest()
+
+    learner = load_learner(
+        MODEL_PATH,
+        cpu=True,
+    )
+
+    return learner, size, md5
+
 
 try:
-    model = load_model()
+    model, model_size, model_md5 = load_model()
 except Exception:
     st.error("Error loading model:")
     st.code(traceback.format_exc())
     st.stop()
+
+# =========================================================
+# DEBUG PANEL (compare these values with your Colab output)
+# =========================================================
+if SHOW_DEBUG:
+    with st.expander("🛠 Debug info (environment & model file)"):
+        try:
+            import fasttransform
+            ft_version = fasttransform.__version__
+        except Exception:
+            ft_version = "not installed"
+        st.write({
+            "python": sys.version,
+            "torch": torch.__version__,
+            "torchvision": torchvision.__version__,
+            "fastai": fastai.__version__,
+            "fasttransform": ft_version,
+            "pillow": PIL.__version__,
+            "model_file_size_bytes": model_size,
+            "model_file_md5": model_md5,
+        })
 # =========================================================
 # IMAGE UPLOADER
 # =========================================================
