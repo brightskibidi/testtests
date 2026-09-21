@@ -9,7 +9,11 @@ import torchvision
 import PIL
 import os
 import traceback
+import pathlib
+import platform
 
+if platform.system() == "Linux":
+    pathlib.WindowsPath = pathlib.PosixPath
 # =========================================================
 # PAGE CONFIGURATION
 # =========================================================
@@ -170,37 +174,32 @@ disease_info = {
 # =========================================================
 # LOAD MODEL
 # =========================================================
+MODEL_PATH = "Skin_disease (2).pkl"
+GDRIVE_FILE_ID = "1xkTs2TQ3QsNw7-p5MpE-m7p1UJ56mHHV"
+
 @st.cache_resource
 def load_model():
-    import torch
-    import fastai
-    import fasttransform
-    import PIL
-    import sys
+    import gdown
 
-    st.write("=== ENVIRONMENT ===")
-    st.write("Python:", sys.version)
-    st.write("PyTorch:", torch.__version__)
-    st.write("FastAI:", fastai.__version__)
-    st.write("FastTransform:", fasttransform.__version__)
-    st.write("Pillow:", PIL.__version__)
+    # Download from Google Drive if the file is missing or is a tiny LFS pointer
+    if (not os.path.exists(MODEL_PATH)
+            or os.path.getsize(MODEL_PATH) < 1024 * 1024):
+        if os.path.exists(MODEL_PATH):
+            os.remove(MODEL_PATH)
+        gdown.download(
+            id=GDRIVE_FILE_ID,
+            output=MODEL_PATH,
+            quiet=False,
+        )
 
-    st.write("=== LOADING MODEL ===")
+    # Sanity check: make sure we got a real model, not an HTML error page
+    if os.path.getsize(MODEL_PATH) < 1024 * 1024:
+        raise RuntimeError(
+            "Downloaded file is too small. Check that the Google Drive "
+            "file is shared as 'Anyone with the link'."
+        )
 
-    model = load_learner(
-        "Skin_disease.pkl",
-        cpu=True,
-    )
-
-    st.write("SUCCESS:", type(model))
-
-    return model
-try:
-    model = load_model()
-except Exception:
-    st.error("Error loading model:")
-    st.code(traceback.format_exc())
-    st.stop()
+    return load_learner(MODEL_PATH, cpu=True)
 # =========================================================
 # IMAGE UPLOADER
 # =========================================================
